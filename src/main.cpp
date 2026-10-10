@@ -50,7 +50,7 @@ bool usable(PlayLayer* pl) {
            !pl->m_isPaused && !pl->m_hasCompletedLevel;
 }
 
-void release(PlayLayer* pl) {
+void qfsReleaseJump(PlayLayer* pl) {
     if (g.pressed && pl) {
         pl->handleButton(false, 1, true); // Player 1 jump released
         g.pressed = false;
@@ -120,7 +120,7 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
         if (this != g.owner) return;
         if (!settingEnabled() || !this->m_isPracticeMode) {
             if (g.active) {
-                release(this);
+                qfsReleaseJump(this);
                 g.active = false;
             }
             return;
@@ -133,13 +133,13 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
         if (!usable(this) || g.deathPending || this->m_playerDied) return;
 
         if (g.planner.needsCheckpoint()) {
-            release(this); // snapshot only after jump has been released
+            qfsReleaseJump(this); // snapshot only after jump has been released
             if (this->markCheckpoint() != nullptr) {
                 g.planner.savedCheckpoint();
                 updateHUD(this, true);
             } else {
                 g.stopped = true;
-                release(this);
+                qfsReleaseJump(this);
                 log::warn("QFS: failed to save practice checkpoint");
             }
         } else updateHUD(this);
@@ -170,7 +170,7 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
         if (g.owner != this) return;
         // GD has now restored its actual practice checkpoint state.
         // Restore the mod's frame counter to the corresponding logical tick.
-        release(this);
+        qfsReleaseJump(this);
         if (automaticRetry) {
             g.planner.rewindToCheckpoint();
             g.deathPending = false;
@@ -188,7 +188,7 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
         if (g.owner == this && g.active) {
             g.won = true;
             g.active = false;
-            release(this);
+            qfsReleaseJump(this);
             log::info("QFS: level complete in practice mode");
             updateHUD(this, true);
         }
@@ -197,7 +197,7 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
 
     void onQuit() {
         if (g.owner == this) {
-            release(this);
+            qfsReleaseJump(this);
             g = Runtime{};
         }
         PlayLayer::onQuit();
@@ -213,7 +213,7 @@ class $modify(QuarterFrameCommands, GJBaseGameLayer) {
             g.planner.advanceStep();
             // Hold a jump for exactly one command-processing step.
             if (g.pressed && g.planner.tick > g.planner.clickAt)
-                release(pl);
+                qfsReleaseJump(pl);
             if (g.planner.shouldPress()) {
                 pl->handleButton(true, 1, true);
                 g.pressed = true;
