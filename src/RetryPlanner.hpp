@@ -18,6 +18,7 @@ struct RetryPlanner {
     int retries = 0;
     int maxRetries = 500;
     bool exhausted = false;
+    bool backtracked = false;
 
     void begin(Tick initial, Tick framesPerQuarter, int limit) {
         tick = initial;
@@ -28,6 +29,7 @@ struct RetryPlanner {
         retries = 0;
         maxRetries = std::max(1, limit);
         exhausted = false;
+        backtracked = false;
     }
 
     // Called only after a checkpoint was successfully created in GD.
@@ -36,6 +38,7 @@ struct RetryPlanner {
         nextCheckpoint = tick + interval;
         clickAt = tick + 1;
         retries = 0;
+        backtracked = false;
     }
 
     // A death on step D makes D-1 the first new candidate. Subsequent
@@ -45,7 +48,7 @@ struct RetryPlanner {
         if (exhausted) return false;
         ++retries;
         Tick beforeDeath = deathStep - 1;
-        Tick candidate = retries == 1
+        Tick candidate = (retries == 1 && !backtracked)
             ? beforeDeath
             : std::min(clickAt - 1, beforeDeath);
         if (retries > maxRetries || candidate <= checkpoint) {
@@ -53,6 +56,24 @@ struct RetryPlanner {
             return false;
         }
         clickAt = candidate;
+        return true;
+    }
+
+    // Called after the game has removed the newest checkpoint and will
+    // restore the preceding one. The removed frame is deliberately skipped
+    // as a fresh checkpoint on this retry path.
+    bool backtrackTo(Tick olderCheckpoint, Tick discardedCheckpoint) {
+        if (discardedCheckpoint <= olderCheckpoint + 1) {
+            exhausted = true;
+            return false;
+        }
+        checkpoint = olderCheckpoint;
+        tick = olderCheckpoint;
+        clickAt = discardedCheckpoint - 1;
+        nextCheckpoint = discardedCheckpoint + interval;
+        retries = 0;
+        exhausted = false;
+        backtracked = true;
         return true;
     }
 
