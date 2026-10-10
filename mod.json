@@ -1,0 +1,34 @@
+{
+  "geode": "5.10.1",
+  "gd": {
+    "win": "2.2081"
+  },
+  "id": "local.quarterframesolver",
+  "name": "Quarter Frame Solver",
+  "version": "0.1.0",
+  "developer": "Local",
+  "description": "Experimental practice-mode checkpoint, input timing search, and fast tick stepping.",
+  "settings": {
+    "enabled": {
+      "type": "bool", "name": "Enable experimental solver", "default": false,
+      "description": "Works only in Practice Mode. Enable, then restart the level."
+    },
+    "hertz": {
+      "type": "int", "name": "Simulation ticks per second (F)",
+      "default": 240, "min": 60, "max": 1000,
+      "description": "The checkpoint spacing is round(F / 4) simulation ticks. Match the game's effective physics tick rate."
+    },
+    "steps-per-render": {
+      "type": "int", "name": "Simulation steps per rendered frame", "default": 1,
+      "min": 1, "max": 32,
+      "description": "Experimental acceleration. 1 is normal; 4 or 8 skips some renders. Raises CPU workload and can conflict with other timing mods."
+    },
+    "max-retries": {
+      "type": "int", "name": "Maximum retries per checkpoint", "default": 500,
+      "min": 1, "max": 100000
+    },
+    "show-hud": {
+      "type": "bool", "name": "Show status HUD", "default": true
+    }
+  }
+}
