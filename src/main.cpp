@@ -8,20 +8,35 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 using namespace geode::prelude;
 
 namespace {
+struct SavedPoint {
+    qfs::RetryPlanner::Tick tick = 0;
+    CheckpointObject* handle = nullptr; // non-owning identity, never dereferenced
+};
+
 struct Runtime {
     PlayLayer* owner = nullptr;
     cocos2d::CCLabelBMFont* hud = nullptr; // Owned by the PlayLayer scene
     qfs::RetryPlanner planner;
     bool active = false;
     bool deathPending = false;
+    bool backtrackPending = false;
+    std::vector<SavedPoint> savedPoints;
+    int backtracks = 0;
     bool pressed = false;
     bool won = false;
     bool stopped = false;
     int lastHudTick = -1;
+    int pressesThisAttempt = 0;
+    int totalPresses = 0;
+    int deaths = 0;
+    qfs::RetryPlanner::Tick lastDeathTick = -1;
+    std::string stopReason;
+
 };
 Runtime g;
 
@@ -67,30 +82,49 @@ void updateHUD(PlayLayer* pl, bool force = false) {
     if (!force && static_cast<int>(g.planner.tick % 10) != 0) return;
     std::string message;
     if (g.won) message = "QFS: complete";
-    else if (g.stopped) message = "QFS: stopped (search exhausted)";
-    else message = "QFS CP=" + std::to_string(g.planner.checkpoint) +
+    else if (g.stopped) message = "QFS STOP: " + g.stopReason;
+    else message = "QFS: running";
+    message += "\nCP=" + std::to_string(g.planner.checkpoint) +
         " tick=" + std::to_string(g.planner.tick) +
-        " click=" + std::to_string(g.planner.clickAt) +
-        " retry=" + std::to_string(g.planner.retries);
+        " target=" + std::to_string(g.planner.clickAt) +
+        " retry=" + std::to_string(g.planner.retries) +
+        " clicks=" + std::to_string(g.totalPresses) +
+        " deaths=" + std::to_string(g.deaths) +
+        " cps=" + std::to_string(g.savedPoints.size()) +
+        " backs=" + std::to_string(g.backtracks);
+    if (g.lastDeathTick >= 0)
+        message += " lastDeath=" + std::to_string(g.lastDeathTick);
     g.hud->setString(message.c_str());
 }
 
 void start(PlayLayer* pl) {
     g.active = true;
     g.deathPending = false;
+    g.backtrackPending = false;
+    g.savedPoints.clear();
+    g.backtracks = 0;
     g.stopped = false;
     g.won = false;
     g.pressed = false;
+    g.pressesThisAttempt = 0;
+    g.totalPresses = 0;
+    g.deaths = 0;
+    g.lastDeathTick = -1;
+    g.stopReason.clear();
     g.planner.begin(0, std::max(1, (ticksPerSecond() + 2) / 4), retryLimit());
 
     // Start with a real GD checkpoint, not a fake saved x/y position. This
     // also saves triggers, game state, and other information that GD tracks.
-    if (pl->markCheckpoint() == nullptr) {
+    auto* rootCheckpoint = pl->markCheckpoint();
+    if (rootCheckpoint == nullptr) {
         g.active = false;
         g.stopped = true;
+        g.stopReason = "initial checkpoint failed";
         log::warn("QFS: markCheckpoint failed; solver stopped");
         return;
     }
+
+    g.savedPoints.push_back({0, rootCheckpoint});
 
     if (!g.hud && Mod::get()->getSettingValue<bool>("show-hud")) {
         g.hud = cocos2d::CCLabelBMFont::create("QFS: starting", "bigFont.fnt");
@@ -134,11 +168,14 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
 
         if (g.planner.needsCheckpoint()) {
             qfsReleaseJump(this); // snapshot only after jump has been released
-            if (this->markCheckpoint() != nullptr) {
+            if (auto* newlySaved = this->markCheckpoint()) {
                 g.planner.savedCheckpoint();
+                g.savedPoints.push_back({g.planner.checkpoint, newlySaved});
+                g.pressesThisAttempt = 0;
                 updateHUD(this, true);
             } else {
                 g.stopped = true;
+                g.stopReason = "checkpoint save failed";
                 qfsReleaseJump(this);
                 log::warn("QFS: failed to save practice checkpoint");
             }
@@ -150,14 +187,27 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
         if (usable(this) && !g.deathPending && !g.planner.exhausted) {
             g.deathPending = true;
             const auto failed = g.planner.tick;
-            const bool canTryAgain = g.planner.onDeath(failed);
-            if (!canTryAgain) {
-                g.stopped = true;
-                log::warn("QFS: no earlier one-tick click remains near checkpoint {}",
+            ++g.deaths;
+            g.lastDeathTick = failed;
+            const bool diedBeforeFirstPress =
+                g.pressesThisAttempt == 0 && failed <= g.planner.checkpoint + 1;
+            const bool canRetryHere =
+                !diedBeforeFirstPress && g.planner.onDeath(failed);
+
+            if (canRetryHere) {
+                log::info("QFS: died at tick {}; retry {} with click at {}",
+                    failed, g.planner.retries, g.planner.clickAt);
+            } else if (g.savedPoints.size() > 1) {
+                // The current checkpoint is too late for any remaining input.
+                // Undo it BEFORE Geometry Dash chooses its respawn point.
+                g.backtrackPending = true;
+                log::info("QFS: checkpoint boundary reached at {}; will backtrack",
                     g.planner.checkpoint);
             } else {
-                log::info("QFS: died at tick {}; retry {} with jump on {}",
-                    failed, g.planner.retries, g.planner.clickAt);
+                g.stopped = true;
+                g.stopReason = diedBeforeFirstPress ? "died before first click at start" :
+                    "search exhausted at level start";
+                log::warn("QFS stopped at earliest checkpoint, death tick {}", failed);
             }
             updateHUD(this, true);
         }
@@ -166,19 +216,57 @@ class $modify(QuarterFramePlayLayer, PlayLayer) {
 
     void resetLevel() {
         const bool automaticRetry = (g.owner == this && g.deathPending);
+        bool backtrackOK = false;
+        qfs::RetryPlanner::Tick earlierTick = 0;
+        qfs::RetryPlanner::Tick discardedTick = 0;
+
+        if (automaticRetry && g.backtrackPending && g.savedPoints.size() > 1) {
+            const auto newest = g.savedPoints.back();
+            const auto previous = g.savedPoints[g.savedPoints.size() - 2];
+            earlierTick = previous.tick;
+            discardedTick = newest.tick;
+
+            // Never delete a user's manually inserted checkpoint by accident.
+            if (this->getLastCheckpoint() == newest.handle) {
+                this->removeCheckpoint(false); // GD 2.2081: newest checkpoint
+                backtrackOK = this->getLastCheckpoint() == previous.handle;
+            }
+            if (backtrackOK) {
+                g.savedPoints.pop_back();
+                ++g.backtracks;
+                log::info("QFS: removed checkpoint at {}; restoring {}",
+                    discardedTick, earlierTick);
+            } else {
+                g.stopped = true;
+                g.stopReason = "checkpoint removal mismatch";
+                log::warn("QFS: removal did not reveal previous checkpoint; stopping safely");
+            }
+        }
+
+        // Important: GD chooses the latest remaining checkpoint during reset.
         PlayLayer::resetLevel();
         if (g.owner != this) return;
-        // GD has now restored its actual practice checkpoint state.
-        // Restore the mod's frame counter to the corresponding logical tick.
         qfsReleaseJump(this);
+
         if (automaticRetry) {
-            g.planner.rewindToCheckpoint();
+            if (g.backtrackPending && backtrackOK) {
+                if (!g.planner.backtrackTo(earlierTick, discardedTick)) {
+                    g.stopped = true;
+                    g.stopReason = "no frame between checkpoints";
+                }
+            } else if (!g.backtrackPending) {
+                g.planner.rewindToCheckpoint();
+            }
+            g.pressesThisAttempt = 0;
             g.deathPending = false;
+            g.backtrackPending = false;
             updateHUD(this, true);
         } else {
-            // Manual restart: discard our old search and start fresh.
+            // Manual restart discards old checkpoint bookkeeping.
             g.active = false;
             g.deathPending = false;
+            g.backtrackPending = false;
+            g.savedPoints.clear();
             g.stopped = false;
             g.won = false;
         }
@@ -217,6 +305,10 @@ class $modify(QuarterFrameCommands, GJBaseGameLayer) {
             if (g.planner.shouldPress()) {
                 pl->handleButton(true, 1, true);
                 g.pressed = true;
+                ++g.pressesThisAttempt;
+                ++g.totalPresses;
+                log::info("QFS: jump PRESSED at tick {} (checkpoint {}, total presses {})",
+                    g.planner.tick, g.planner.checkpoint, g.totalPresses);
             }
         }
         GJBaseGameLayer::processCommands(dt, arg1, arg2);
