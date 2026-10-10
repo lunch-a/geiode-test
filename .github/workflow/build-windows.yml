@@ -1,0 +1,21 @@
+
+jobs:
+  build-win64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build Geode mod (Win64)
+        id: geode
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: given
+          target: Win64
+          build-config: Release
+      - name: Upload built .geode file
+        uses: actions/upload-artifact@v7
+        with:
+          name: QuarterFrameSolver-Windows
+          path: ${{ steps.geode.outputs.build-output }}
+          if-no-files-found: error
