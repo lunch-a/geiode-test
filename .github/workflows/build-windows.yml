@@ -1,0 +1,32 @@
+name: Build Quarter Frame Solver
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-win64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build Geode mod
+        id: geode
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: given
+          target: Win64
+          build-config: Release
+
+      - name: Upload .geode file
+        uses: actions/upload-artifact@v7
+        with:
+          name: QuarterFrameSolver-Windows
+          path: ${{ steps.geode.outputs.build-output }}/*.geode
+          if-no-files-found: error
