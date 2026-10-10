@@ -5,9 +5,9 @@
   },
   "id": "local.quarterframesolver",
   "name": "Quarter Frame Solver",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "developer": "Local",
-  "description": "Experimental practice-mode checkpoint, input timing search, and fast tick stepping.",
+  "description": "Experimental practice-mode autosolver with checkpoint rollback and fast tick stepping.",
   "settings": {
     "enabled": {
       "type": "bool", "name": "Enable experimental solver", "default": false,
